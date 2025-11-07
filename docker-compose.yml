@@ -1,0 +1,121 @@
+services:
+  # postgres:
+  #   image: postgres:16
+  #   environment:
+  #     POSTGRES_DB: wallet_db
+  #     POSTGRES_USER: wallet
+  #     POSTGRES_PASSWORD: secret
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+  #   ports: ["5432:5432"]
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    env_file:
+      - .env
+    networks:
+      - funkycadet-network
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "19092:19092"
+    env_file:
+      - .env
+    networks:
+      - funkycadet-network
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "kafka-topics",
+          "--bootstrap-server",
+          "localhost:9092",
+          "--list",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  kafka-ui:
+    image: kafbat/kafka-ui:main
+    container_name: kafka-ui
+    ports:
+      - 9000:8080
+    environment:
+      DYNAMIC_CONFIG_ENABLED: "true"
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  wallet_service:
+    container_name: wallet_service
+    build: ./wallet_service
+    # dockerfile: Dockerfile
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8005"
+    volumes: [./wallet_service:/app]
+    depends_on:
+      - kafka
+    env_file:
+      - .env
+    networks:
+      - funkycadet-network
+    ports:
+      - "8005:8005"
+    # environment:
+    #   DATABASE_URL: postgres://wallet:secret@postgres:5432/wallet_db
+    #   KAFKA_BOOTSTRAP: kafka:9092
+
+  history_service:
+    container_name: history_service
+    build: ./history_service
+    # dockerfile: Dockerfile
+    command: >
+      sh -c "
+        python manage.py migrate --noinput &&
+        python manage.py create_topic &&
+        python manage.py consume_kafka
+      "
+
+    volumes: [./history_service:/app]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    env_file:
+      - .env
+    networks:
+      - funkycadet-network
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/consumer_alive"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    # environment:
+    #   DATABASE_URL: postgres://wallet:secret@postgres:5432/wallet_db
+    #   KAFKA_BOOTSTRAP: kafka:9092
+
+# volumes:
+#   pgdata:
+
+networks:
+  funkycadet-network:
+    external: true
